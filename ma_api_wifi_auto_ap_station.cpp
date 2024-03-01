@@ -35,11 +35,15 @@
 *******************************************************************************/
 
 /* Private define ------------------------------------------------------------*/
+#define DF_CREDENTIALS_FILE_NAME           "/wifi_credentials.txt"
+
 #define DF_IP_ADDRESS                   IPAddress(192, 168, 123, 123)
 #define DF_IP_MASK                      IPAddress(255, 255, 255, 0)
 
 #define DF_SSID_AP                      "SOBREIRO_MONITOR"
 #define DF_PASSWORD_AP                  "12345678"
+
+#define DF_MILIS_TO_SECONDS_FACTOR 1000
 /* Private macros ------------------------------------------------------------*/
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,8 +67,41 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
 
 /* Body of private functions -------------------------------------------------*/
 
+int8_t ma_api_wifi_setup_station(st_wifi_station_credential_t in_wifiCredentials, int maxAttempts) 
+{
+    PRINTF("Connecting on:\n   SSID: %s    PASSWORD: %s\n", in_wifiCredentials.stringSsid, in_wifiCredentials.stringPassword);
+
+    int attempts = 0;
+
+    while (attempts < maxAttempts) 
+    {
+        WiFi.begin(in_wifiCredentials.stringSsid.c_str(), in_wifiCredentials.stringPassword.c_str());
+        int attempt = 0;
+        while (attempt < 10 && WiFi.status() != WL_CONNECTED)
+        {
+            delay(500);
+            PRINTF(".");
+            attempt++;
+        }
+
+        if (WiFi.status() == WL_CONNECTED) 
+        {
+            PRINTF("\nWiFi conected\n");
+            return  0;
+        } 
+        else 
+        {
+            PRINTF("\nFail to conect. Retry...\n");
+            attempts++;
+        }
+    }
+
+    return -1; // Erro: falha na conexão após o número máximo de tentativas
+}
+
+
 /**
-  * @Func       : ma_api_wifi_init  
+  * @Func       : ma_api_wifi_check_credentials  
   * @brief      : This function initializes the WiFi module in either Station mode or Access Point (AP) mode based on 
   *                 the provided mode.
   * 
@@ -73,25 +110,16 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
   * @parameters : eWIFI_MODE: The WiFi mode to initialize (WIFI_MODE_STA for Station mode, WIFI_MODE_AP for AP mode).
   * @retval     : None
   */
-void ma_api_wifi_init(void) 
+void ma_api_wifi_setup_access_point(st_wifi_station_credential_t in_credentials) 
 {
-    ma_api_wifi_read_network_credentials(&stWifiStationCredential);
-    if(stWifiStationCredential.clsStringSsid.isEmpty() || stWifiStationCredential.clsStringPassword.isEmpty())
-    {
-        PRINTF("INICIANDO EM WIFI STATION POR QUE TEMOS DADOS NA MEMORIA\n");
-    }
-    else
-    {
-        PRINTF("Setting AP (Access Point)… Only to set SSID and PASSWORD.\n");
-        WiFi.mode(WIFI_AP); 
-        WiFi.softAP(DF_SSID_AP, DF_PASSWORD_AP);   //launch the access point
-        PRINTF("Wait 100 ms for AP_START...\n");
-        delay(100);
-        PRINTF("Setting the AP\n");
-        PRINTF("AP IP address: %s\n", DF_IP_ADDRESS);
-        WiFi.softAPConfig(DF_IP_ADDRESS, DF_IP_ADDRESS, DF_IP_MASK);
-        clsWifiServer.begin();
-    }
+    PRINTF("Setting AP (Access Point)… Only to set SSID and PASSWORD.\n");
+    WiFi.mode(WIFI_AP); 
+    WiFi.softAP(DF_SSID_AP, DF_PASSWORD_AP);   //launch the access point
+    PRINTF("Wait 100 ms for AP_START...\n");
+    delay(100);
+    PRINTF("Setting the AP\n");
+    WiFi.softAPConfig(DF_IP_ADDRESS, DF_IP_ADDRESS, DF_IP_MASK);
+    clsWifiServer.begin();
 }
 
 
@@ -104,7 +132,8 @@ void ma_api_wifi_init(void)
   * @parameters : in_client: The WiFiClient object representing the client to which the response will be sent
   * @retval     : None
   */
-void ma_api_wifi_send_http_response(WiFiClient in_client) {
+void ma_api_wifi_send_http_response(WiFiClient in_client) 
+{
   in_client.println("HTTP/1.1 200 OK");
   in_client.println("Content-type:text/html");
   in_client.println("Connection: close");
@@ -119,9 +148,9 @@ void ma_api_wifi_send_http_response(WiFiClient in_client) {
   in_client.println("<body><h1>Sobreiro Monitor</h1>");
   in_client.println("<form id=\"formSalvar\" action=\"/save_data\" method=\"post\">");
   in_client.println("<p>Digite o SSID: </p>");
-  in_client.println("<p><input type=\"text\" name=\"user\" value=\"" + stWifiStationCredential.clsStringSsid + "\"><p>");
+  in_client.println("<p><input type=\"text\" name=\"user\" value=\"" + stWifiStationCredential.stringSsid + "\"><p>");
   in_client.println("<p>Digite a SENHA: </p>");
-  in_client.println("<p><input type=\"password\" name=\"password\" id=\"password\" value=\"" + stWifiStationCredential.clsStringPassword + "\"></p>");
+  in_client.println("<p><input type=\"password\" name=\"password\" id=\"password\" value=\"" + stWifiStationCredential.stringPassword + "\"></p>");
   in_client.println("<button type=\"button\" onclick=\"togglePasswordVisibility()\">Mostrar/Ocultar Senha</button>");
   in_client.println("<p><input type=\"submit\" value=\"Salvar\"></p>");
   in_client.println("</form>");
@@ -150,56 +179,73 @@ void ma_api_wifi_send_http_response(WiFiClient in_client) {
 }
 
 
+
+
 /**
   * @Func       : ma_api_wifi_process_client_request
   * @brief      : This function processes the client request and sends an HTTP response
   * @pre-cond.  : The client must be connected and ready to receive the response
   * @post-cond. : The HTTP response is sent to the client
   * @parameters : 
-  *       - in_client: The WiFiClient object representing the client that sent the request
   *       - in_oldSsid: The old SSID stored in memory
   *       - in_oldPassword: The old password stored in memory
   * @retval     : None
   */
-void ma_api_wifi_process_client_request(WiFiClient in_client, String in_oldSsid, String in_oldPassword) 
+void ma_api_wifi_process_client_request(WiFiClient *in_wifiClient, String in_oldSsid, String in_oldPassword, uint16_t in_timeToWaitSeconds) 
 {
     String header = "";
     String currentLine = "";
-
+    *in_wifiClient = clsWifiServer.available();
+    unsigned long waitStartTime = millis();
     // Ler o cabeçalho HTTP linha por linha
-    while (in_client.connected()) {
-        if (in_client.available()) {
-        char c = in_client.read();
-        //Serial.write(c);                    // print it out the serial monitor
-        header += c;
-        if (c == '\n') {
-            if (currentLine.length() == 0) {
-            // Cabeçalho HTTP completo recebido
-            in_client.println("HTTP/1.1 200 OK");
-            in_client.println("Content-type:text/html");
-            in_client.println("Connection: close");
-            in_client.println();
-
-            // Enviar resposta HTTP
-            ma_api_wifi_send_http_response(in_client);
-            break;
-            } else {
-            currentLine = "";
-            }
-        } else if (c != '\r') {
-            currentLine += c;
-        }
-        }
-    }
-
-    ma_api_wifi_get_token(header, &stWifiStationCredential.clsStringSsid, &stWifiStationCredential.clsStringPassword);
-
-    if(in_oldSsid != stWifiStationCredential.clsStringSsid || in_oldPassword != stWifiStationCredential.clsStringPassword)
+    while (in_wifiClient->connected()) 
     {
-        ma_api_wifi_update_network_credentials(stWifiStationCredential.clsStringSsid, stWifiStationCredential.clsStringPassword);
-        PRINTF("Novas credenciais salvas na memória:\n    SSID: %s\n   PASSWORD: %s\n", stWifiStationCredential.clsStringSsid, stWifiStationCredential.clsStringPassword);
+        if(millis() - waitStartTime > (in_timeToWaitSeconds * DF_MILIS_TO_SECONDS_FACTOR))
+        {
+            break;
+        }
+        else if (in_wifiClient->available()) 
+        {
+            char c = in_wifiClient->read();
+            //Serial.write(c);                    // print it out the serial monitor
+            header += c;
+            if (c == '\n') 
+            {
+                if (currentLine.length() == 0) 
+                {
+                    // Cabeçalho HTTP completo recebido
+                    in_wifiClient->println("HTTP/1.1 200 OK");
+                    in_wifiClient->println("Content-type:text/html");
+                    in_wifiClient->println("Connection: close");
+                    in_wifiClient->println();
+
+                    // Enviar resposta HTTP
+                    ma_api_wifi_send_http_response(*in_wifiClient);
+                    break;
+                } 
+                else 
+                {
+                currentLine = "";
+                }
+            } 
+            else if (c != '\r') 
+            {
+                currentLine += c;
+            }
+        }
+
     }
-    in_client.stop();
+    ma_api_wifi_get_token(header, &stWifiStationCredential.stringSsid, &stWifiStationCredential.stringPassword);
+
+    if(stWifiStationCredential.stringSsid.length() >= 5 && stWifiStationCredential.stringPassword.length() >= 5 &&  
+        (in_oldSsid != stWifiStationCredential.stringSsid || in_oldPassword != stWifiStationCredential.stringPassword))
+    {
+        PRINTF("DEBUG - stWifiStationCredential.clsStringSsid.length(): %d\n", stWifiStationCredential.stringSsid.length());
+        PRINTF("DEBUG - stWifiStationCredential.clsStringPassword.length(): %d\n", stWifiStationCredential.stringPassword.length());
+        ma_api_wifi_update_network_credentials(stWifiStationCredential.stringSsid, stWifiStationCredential.stringPassword);
+        esp_restart(); //Force reboot
+    }
+    in_wifiClient->stop();
 }
 
 /**
@@ -217,13 +263,15 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
 {
     // Find the position of the first '?' in the URL (if any)
     int index = in_header.indexOf('?');
-    if (index != -1) {
+    if (index != -1) 
+    {
         // Get the part of the URL after the '?' (which contains the parameters)
         String params = in_header.substring(index + 1);
 
         // Find the position of the start of the SSID in the parameters string
         int ssidIndex = params.indexOf("ssid=");
-        if (ssidIndex != -1) {
+        if (ssidIndex != -1) 
+        {
             // Extract the value of the SSID (after "ssid=")
             int delimiterIndex[5];
             delimiterIndex[0] = params.indexOf('&', ssidIndex);
@@ -234,19 +282,28 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
 
             // Find the next delimiter ('&', ' ', '\n', '\r', or '/') after the SSID
             int ssidEndIndex = params.length(); // Initialize with the length of the string to ensure a default value
-            for (int i = 0; i < 5; i++) {
-                if (delimiterIndex[i] != -1 && delimiterIndex[i] < ssidEndIndex) {
+            for (int i = 0; i < 5; i++) 
+            {
+                if (delimiterIndex[i] != -1 && delimiterIndex[i] < ssidEndIndex) 
+                {
                     ssidEndIndex = delimiterIndex[i];
                 }
             }
 
             *out_ssid = params.substring(ssidIndex + 5, ssidEndIndex);
+            String newSsid = params.substring(ssidIndex + 5, ssidEndIndex);
+            if(newSsid[newSsid.length() -1] == '\r')
+            {
+                newSsid[newSsid.length() -1] = '\0';
+            }
+            *out_ssid = newSsid;
             PRINTF("Found SSID: %s\n", *out_ssid);
         }
 
         // Find the position of the start of the password in the parameters string
         int passwordIndex = params.indexOf("password=");
-        if (passwordIndex != -1) {
+        if (passwordIndex != -1) 
+        {
             // Extract the value of the password (after "password=")
             int delimiterIndex[5];
             delimiterIndex[0] = params.indexOf('&', passwordIndex);
@@ -257,18 +314,26 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
 
             // Find the next delimiter ('&', ' ', '\n', '\r', or '/') after the password
             int passwordEndIndex = params.length(); // Initialize with the length of the string to ensure a default value
-            for (int i = 0; i < 5; i++) {
-                if (delimiterIndex[i] != -1 && delimiterIndex[i] < passwordEndIndex) {
+            for (int i = 0; i < 5; i++) 
+            {
+                if (delimiterIndex[i] != -1 && delimiterIndex[i] < passwordEndIndex) 
+                {
                     passwordEndIndex = delimiterIndex[i];
                 }
             }
 
-            *out_password = params.substring(passwordIndex + 9, passwordEndIndex);
+            String newPassword = params.substring(passwordIndex + 9, passwordEndIndex);
+            if(newPassword[newPassword.length() -1] == '\r')
+            {
+            newPassword[newPassword.length() -1] = '\0';
+            }
+            *out_password = newPassword;
             PRINTF("Found Password: %s\n", *out_password);
         }
-
-    } else {
-        PRINTF("Don't have parameters in URL.\n");
+    } 
+    else 
+    {
+        //PRINTF("Don't have parameters in URL.\n");
     }
 }
 
@@ -286,20 +351,22 @@ void ma_api_wifi_get_token(String in_header, String *out_ssid, String *out_passw
 void ma_api_wifi_update_network_credentials(const String in_ssid, const String in_password) 
 {
     // Open the file for writing to SPIFFS
-    File file = SPIFFS.open("/wifi_credentials.txt", "w+");
+    File file = SPIFFS.open(DF_CREDENTIALS_FILE_NAME, "w+");
     if (!file) {
         PRINTF("Error opening file for writing.\n");
         return;
     }
 
     // Write the credentials to the file
-    file.println("SSID: " + in_ssid);
-    file.println("Password: " + in_password);
+    file.print("SSID: ");
+    file.println(in_ssid);
+    file.print("Password: ");
+    file.println(in_password);
 
     // Close the file
     file.close();
 
-    PRINTF("New credentials saved in SPIFFS.\n");
+    PRINTF("New credentials saved in SPIFFS.\n      SSID: %s Password: %s\n", in_ssid, in_password);
 }
 
 
@@ -309,33 +376,54 @@ void ma_api_wifi_update_network_credentials(const String in_ssid, const String i
   * @pre-cond.  : SPIFFS must be initialized and the file system must be accessible
   * @post-cond. : Network credentials are read from SPIFFS and updated in the structure
   * @parameters : 
-  *       - in_credentials: Pointer to the structure where the credentials will be stored
+  *       - out_credentials: Pointer to the structure where the credentials will be stored
   * @retval     : None
   */
-void ma_api_wifi_read_network_credentials(st_wifi_station_credential_t *in_credentials) 
+int8_t ma_api_wifi_read_network_credentials(st_wifi_station_credential_t *out_credentials) 
 {
     // Open the file for reading from SPIFFS
-    File file = SPIFFS.open("/wifi_credentials.txt", "r");
-    if (!file) {
-        PRINTF("Error opening file for reading.\n");
-        return;
+    File file = SPIFFS.open(DF_CREDENTIALS_FILE_NAME, "r");
+    if (!file)
+    {
+        PRINTF("Erro ao abrir o arquivo para leitura.\n");
+        return -1;
     }
 
     // Read lines from the file and extract the credentials
     String line;
-    while (file.available()) {
+    bool ssidFound = false;
+    bool passwordFound = false;
+    while (file.available()) 
+    {
         line = file.readStringUntil('\n');
-        if (line.startsWith("SSID: ")) {
-            in_credentials->clsStringSsid = line.substring(6); // Remove "SSID: " from the line
-        } else if (line.startsWith("Password: ")) {
-            in_credentials->clsStringPassword = line.substring(10); // Remove "Password: " from the line
+        line.trim();
+        if (line.startsWith("SSID: ")) 
+        {
+            out_credentials->stringSsid = line.substring(6); // Remove "SSID: " from the line
+            ssidFound = true;
+        } 
+        else if (line.startsWith("Password: ")) 
+        {
+            out_credentials->stringPassword = line.substring(10); // Remove "Password: " from the line
+            passwordFound = true;
         }
     }
 
     // Close the file
     file.close();
 
-    PRINTF("Credentials read from SPIFFS and updated in the credential structure.\n");
+    if (!ssidFound || !passwordFound)
+    {
+        PRINTF("Erro ao ler as credenciais da SPIFFS.\n");
+        out_credentials->hasCredentials = false;
+        return -1;
+    }
+
+    PRINTF("Credenciais lidas da SPIFFS e atualizadas na estrutura de credenciais.\n     SSID: %s SENHA: %s\n", 
+            out_credentials->stringSsid, out_credentials->stringPassword);
+    out_credentials->hasCredentials = true;
+    return 0;
 }
+
 
 /*****************************END OF FILE**************************************/

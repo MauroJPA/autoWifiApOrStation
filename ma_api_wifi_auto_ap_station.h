@@ -33,15 +33,17 @@
 #endif
 /* Typedef -------------------------------------------------------------------*/
 typedef struct {
-  String clsStringSsid;
-  String clsStringPassword;
+  String stringSsid;
+  String stringPassword;
+  bool hasCredentials;
 }st_wifi_station_credential_t;
 
 /* Public objects ------------------------------------------------------------*/
-extern void ma_api_wifi_init(void);
+extern int8_t ma_api_wifi_setup_station(st_wifi_station_credential_t in_wifiCredentials, int maxAttempts);
+extern void ma_api_wifi_setup_access_point(st_wifi_station_credential_t in_credentials);
 extern void ma_api_wifi_update_network_credentials(const String in_ssid, const String in_password);
-extern void ma_api_wifi_read_network_credentials(st_wifi_station_credential_t *out_credential);
-extern void ma_api_wifi_process_client_request(WiFiClient in_client, String in_oldSsid, String in_oldPassword) ;
+extern int8_t ma_api_wifi_read_network_credentials(st_wifi_station_credential_t *out_credentials);
+extern void ma_api_wifi_process_client_request(WiFiClient *in_wifiClient, String in_oldSsid, String in_oldPassword, uint16_t in_timeToWaitSeconds);
 
 #endif /* __MA_API_WIFI_H */
 /*****************************END OF FILE**************************************/
